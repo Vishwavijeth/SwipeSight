@@ -9,25 +9,18 @@ import {
 } from "react-native";
 import Swiper from "react-native-deck-swiper";
 import { displayItems } from "../items/displayItems";
+import { recommendationService } from "../utils/recommendationService";
 import { Card } from "./Cards";
 
 const { width, height } = Dimensions.get("window");
 
 export default function HomeScreen({ navigation }) {
   const MAX_SWIPES = 15;
-  const BASE_WEIGHT = 1;
-  const ITEM_WEIGHT = 1.0;
-  const TYPE_WEIGHT = 0.7;
-  const NEGATIVE_WEIGHT = 0.5;
+
 
   const [genderFilter, setGenderFilter] = useState("Male");
   const [currentItems, setCurrentItems] = useState([]);
   const [currentCard, setCurrentCard] = useState(null);
-
-  const [genderState, setGenderState] = useState({
-    Male: { swipes: [], scores: {}, currentIndex: 0 },
-    Female: { swipes: [], scores: {}, currentIndex: 0 },
-  });
 
   const shuffleArray = (array) => {
     let arr = [...array];
@@ -38,7 +31,15 @@ export default function HomeScreen({ navigation }) {
     return arr;
   };
 
-  // Filter and shuffle items whenever gender changes
+
+  // Use a ref to ensure service persistence across re-renders if needed, 
+  // but since it's an exported singleton, direct import is fine. 
+  // We just need to trigger re-renders or navigation.
+
+  const [canNavigate, setCanNavigate] = useState(false);
+  const [swipeCount, setSwipeCount] = useState(0);
+
+  // Initial shuffle on gender change
   useEffect(() => {
     const filtered = displayItems.filter(
       (item) => item.gender.toLowerCase() === genderFilter.toLowerCase()
@@ -47,10 +48,10 @@ export default function HomeScreen({ navigation }) {
     setCurrentItems(shuffled);
     setCurrentCard(shuffled[0] || null);
 
-    setGenderState((prev) => ({
-      ...prev,
-      [genderFilter]: { swipes: [], scores: {}, currentIndex: 0 },
-    }));
+    // Reset service profile and local swipe count
+    recommendationService.resetProfile();
+    setSwipeCount(0);
+    setCanNavigate(false);
   }, [genderFilter]);
 
   const requiredSwipes = useMemo(
@@ -58,55 +59,27 @@ export default function HomeScreen({ navigation }) {
     [currentItems.length]
   );
 
-  const canNavigate =
-    genderState[genderFilter].swipes.length >= requiredSwipes &&
-    requiredSwipes > 0;
-
   const handleSwipe = (direction) => {
-    const idx = genderState[genderFilter].currentIndex;
-    const item = currentItems[idx];
-    if (!item) return;
+    // 1. Get current item
+    // Note: react-native-deck-swiper passed cardIndex is the index of the card in the *original* array passed to it
+    // But since we are popping items purely visually via the swiper, we need to track what we just swiped.
+    // However, the safer way with this library is relying on the card prop passed to the callback if available, 
+    // or using our current internal pointer if we trust it.
 
-    setGenderState((prev) => {
-      const gState = { ...prev[genderFilter] };
-      const key = `${item.item}_${item.type}`;
-
-      gState.scores[key] =
-        (gState.scores[key] || 0) +
-        (direction === "right"
-          ? BASE_WEIGHT * (ITEM_WEIGHT + TYPE_WEIGHT)
-          : -BASE_WEIGHT * NEGATIVE_WEIGHT);
-
-      gState.swipes.push(direction === "right" ? 1 : 0);
-      gState.currentIndex = Math.min(idx + 1, currentItems.length);
-
-      return { ...prev, [genderFilter]: gState };
-    });
-  };
-
-  const getTopPreferencesForCurrentGender = () => {
-    const scores = genderState[genderFilter].scores || {};
-    return Object.entries(scores)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([key]) => key);
-  };
-
-  useEffect(() => {
-    const gState = genderState[genderFilter];
-    if (gState.swipes.length === requiredSwipes && requiredSwipes > 0) {
-      const top = Object.entries(gState.scores)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5);
-      if (top.length) {
-        console.log(`===== Top 5 Preferences (${genderFilter}) =====`);
-        top.forEach(([key, score], i) =>
-          console.log(`${i + 1}. ${key}: ${score.toFixed(2)} points`)
-        );
-        console.log("==================================");
-      }
+    // Actually, 'currentCard' state is updating *after* swipe in the callbacks below. 
+    // So 'currentCard' right now is the one being swiped.
+    if (currentCard) {
+      recommendationService.updateProfile(currentCard, direction);
+      // console.log("Profile Update:", recommendationService.getProfileDebug());
     }
-  }, [genderState, genderFilter, requiredSwipes]);
+
+    const newSwipeCount = swipeCount + 1;
+    setSwipeCount(newSwipeCount);
+
+    if (newSwipeCount >= requiredSwipes && requiredSwipes > 0) {
+      setCanNavigate(true);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -142,7 +115,7 @@ export default function HomeScreen({ navigation }) {
             key={genderFilter} // remount on gender change
             cards={currentItems}
             renderCard={(card) => <Card item={card} />}
-            cardIndex={genderState[genderFilter].currentIndex}
+            cardIndex={0}
             onSwipedLeft={(cardIndex) => {
               handleSwipe("left");
               setCurrentCard(currentItems[cardIndex + 1] || null);
@@ -182,7 +155,6 @@ export default function HomeScreen({ navigation }) {
           disabled={!canNavigate}
           onPress={() =>
             navigation.navigate("Recommendation", {
-              preferences: getTopPreferencesForCurrentGender(),
               gender: genderFilter,
             })
           }
@@ -190,7 +162,7 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.navText}>For You</Text>
         </TouchableOpacity>
         <Text style={{ marginTop: 8, color: "#666" }}>
-          {genderState[genderFilter].swipes.length}/{requiredSwipes || 0} swipes
+          {swipeCount}/{requiredSwipes || 0} swipes
         </Text>
       </View>
     </SafeAreaView>
